@@ -329,10 +329,38 @@ def build_tableau(rates, ledger, cfg):
     out["判定点"] = out.apply(_pt, axis=1)
     out["閾値超"] = out.eligible & out.rate_pct.notna() & out.当月閾値.notna() & (out.rate_pct >= out.当月閾値)
     out["累積率"] = out.rate_pct.round(2)
+
+    # --- 部品レベルの注釈列(全行に同じ値が付く。Tableauの行フィルタ・ソート用) ---
+    pkeys = ["biz", "dev", "part"]
+    latest = out.loc[out.groupby(pkeys)["ym"].idxmax(), pkeys + ["ym"]] \
+                .rename(columns={"ym": "_latest_ym"})
+    out = out.merge(latest, on=pkeys, how="left")
+
+    # 台帳記録あり: 部品固有の行がある、または機種終了の機種に属する
+    def _has_record(r):
+        return ((r.biz, r.dev, r.part) in tl) or ((r.biz, r.dev) in mend)
+    rec_flag = {k: _has_record(pd.Series(dict(zip(pkeys, k)))) for k in
+                out[pkeys].drop_duplicates().itertuples(index=False, name=None)}
+    out["台帳記録あり"] = out.apply(lambda r: rec_flag[(r.biz, r.dev, r.part)], axis=1)
+
+    # 最新状態: 最新月の状態(部品単位)
+    lstate = {(r.biz, r.dev, r.part): recs[(r.biz, r.dev, r.part, int(r.ym))][1]
+              for r in latest.rename(columns={"_latest_ym": "ym"}).itertuples(index=False)}
+    out["最新状態"] = out.apply(lambda r: lstate[(r.biz, r.dev, r.part)], axis=1)
+
+    # 注目度: 最新月における 累積率÷当月閾値 の最大(資格あり系列のみ)。終了部品は NaN
+    last_rows = out[out.ym == out._latest_ym]
+    cand = last_rows[last_rows.eligible & last_rows.rate_pct.notna() & last_rows.当月閾値.notna()].copy()
+    cand["_ratio"] = cand.rate_pct / cand.当月閾値
+    att = cand.groupby(pkeys)["_ratio"].max().round(3)
+    out["注目度"] = out.set_index(pkeys).index.map(att)
+    out = out.drop(columns=["_latest_ym"])
+
     out = out.rename(columns={"biz": "事業コード", "dev": "開発コード", "part": "部番",
                               "series": "系列", "ym": "年月", "eligible": "トリガ資格"})
     return out[["事業コード", "開発コード", "部番", "系列", "年月", "累積率",
-                "cum_use", "cum_sales", "トリガ資格", "当月閾値", "閾値超", "状態", "判定点"]] \
+                "cum_use", "cum_sales", "トリガ資格", "当月閾値", "閾値超", "状態", "判定点",
+                "台帳記録あり", "最新状態", "注目度"]] \
         .rename(columns={"cum_use": "累積使用数", "cum_sales": "累積販売台数"})
 
 
